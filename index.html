@@ -88,11 +88,43 @@ function tradeAssets(list){return list.length?`<div class="asset-list">${list.ma
 function renderTrades(){const rows=filteredTrades();tradeCount.textContent=`${fmt(rows.length)} matching trades`;tradeRows.innerHTML=rows.slice(0,tradeLimit).map(t=>`<article class="trade-card" style="border-top-color:${color(t.a)}"><div class="trade-side"><h3>${esc(eraName(TRANS.franchises.indexOf(t.a),t.y))}</h3>${tradeAssets(t.ag)}</div><div class="trade-center"><span class="trade-date">${esc(transDate(t.m,t.d,t.y))}</span>each side gave ↔</div><div class="trade-side"><h3>${esc(eraName(TRANS.franchises.indexOf(t.b),t.y))}</h3>${tradeAssets(t.bg)}</div></article>`).join('')||'<div class="empty">No trades match these filters.</div>';moreTrades.hidden=rows.length<=tradeLimit;moreTrades.textContent=`Show ${Math.min(30,rows.length-tradeLimit)} more`}
 
 function initRosters(){rostSeason.innerHTML=Object.keys(ROSTERS).sort().reverse().map(y=>`<option>${y}</option>`).join("");rostSeason.value="2025";const fillTeams=()=>{rostTeam.innerHTML=ROSTERS[rostSeason.value].map((t,i)=>`<option value="${i}">${esc(t[0])}</option>`).join("")};fillTeams();rostSeason.addEventListener("change",()=>{fillTeams();renderRosters()});[rostTeam,rostPos].forEach(el=>el.addEventListener("change",renderRosters));rostSearch.addEventListener("input",renderRosters);renderRosters()}function renderRosters(){const yr=rostSeason.value,ti=+rostTeam.value||0,team=ROSTERS[yr][ti];const q=(rostSearch.value||"").toLowerCase(),pos=rostPos.value;const players=[...team[2]].filter(p=>(!pos||p[1]===pos)&&(!q||p[0].toLowerCase().includes(q))).sort((a,b)=>(b[5]-a[5])||(b[3]-a[3]));const st=team[2].filter(p=>p[5]===1).length;rostHead.innerHTML=`<b>${esc(team[0])}</b> · ${esc(team[1])} · ${yr} · ${team[2].length} players`;rostSplit.textContent=`${st} starters · ${team[2].length-st} bench`;rostRows.innerHTML=players.map(p=>`<tr><td data-label="Player">${p[5]===1?"<b>★ "+esc(p[0])+"</b>":esc(p[0])}</td><td data-label="Pos">${posBadge(p[1])}</td><td data-label="NFL">${esc(p[2])}</td><td data-label="Pts">${fmt(p[3])}</td><td data-label="Avg">${Number(p[4]).toFixed(2)}</td></tr>`).join("")||`<tr><td data-label="Result" colspan="5"><div class="empty">No players match these filters.</div></td></tr>`}
-let PL_INDEX=null,PL_LIST=null,PL_INIT=false;
+let PL_INDEX=null,PL_LIST=null,PL_INIT=false,PL_FALLBACKS=[];
+const PL_DISAMBIG={
+ 'Alex Smith':[{tag:'QB · b. 1984 · #11 · Utah',test:c=>c.pos==='QB'},{tag:'TE · b. 1982 · #83 · Stanford',test:c=>c.pos==='TE'}],
+ 'Brandon Marshall':[{tag:'WR · b. 1984 · #15 · UCF',test:c=>c.pos==='WR'},{tag:'LB · b. 1989 · #54 · Nevada',test:c=>c.pos==='LB'}],
+ 'Byron Young':[{tag:'EDGE · b. 1998 · Tennessee',test:c=>c.nfl==='LAR'||c.fid==='goodfellas'},{tag:'DT · b. 2000 · #94 · Alabama',test:c=>['LV','PHI'].includes(c.nfl)||c.fid==='pepe-silvia'}],
+ 'Charles Johnson':[{tag:'DE · b. 1986 · #95 · Georgia',test:c=>c.pos==='DL'},{tag:'WR · b. 1989 · #12 · Grand Valley State',test:c=>c.pos==='WR'}],
+ 'D.J. Williams':[{tag:'LB · b. 1982 · #58 · Miami',test:c=>c.pos==='LB'},{tag:'TE · b. 1988 · #85 · Arkansas',test:c=>c.pos==='TE'}],
+ 'Josh Allen':[{tag:'QB · b. 1996 · #17 · Wyoming',test:c=>c.pos==='QB'},{tag:'DE · b. 1997 · #41 · Kentucky · now Josh Hines-Allen',test:c=>c.pos==='DL'}],
+ 'Kyle Williams':[{tag:'DT · b. 1983 · #95 · LSU',test:c=>c.pos==='DL'},{tag:'WR · b. 2002 · #18 · Washington State',test:c=>c.pos==='WR'&&(c.yr>=2024||c.nfl==='NE'||c.nfl==='NWE')},{tag:'WR · b. 1988 · #15 · Arizona State',test:c=>c.pos==='WR'}],
+ 'Mike Williams':[{tag:'WR · b. 1987 · #19 · Syracuse',test:c=>['TAM','BUF'].includes(c.nfl)},{tag:'WR · b. 1984 · #17 · USC',test:c=>c.nfl==='SEA'},{tag:'WR · b. 1994 · #81 · Clemson',test:c=>['LAC','PIT'].includes(c.nfl)||c.yr>=2017}],
+ 'Ryan Grant':[{tag:'RB · b. 1982 · #25 · Notre Dame',test:c=>c.pos==='RB'},{tag:'WR · b. 1990 · #11 · Tulane',test:c=>c.pos==='WR'}],
+ 'Steve Smith':[{tag:'WR · Sr. · b. 1979 · #89 · Utah',test:c=>['CAR','BAL'].includes(c.nfl)||c.yr>=2013},{tag:'WR · b. 1985 · #12 · USC',test:c=>['PHI','STL'].includes(c.nfl)}],
+ 'Zach Miller':[{tag:'TE · b. 1984 · #86 · Nebraska-Omaha',test:c=>['JAC','TAM','CHI'].includes(c.nfl)},{tag:'TE · b. 1985 · #86 · Arizona State',test:c=>c.nfl==='SEA'}]
+};
 function buildPlayers(){
   if(PL_INDEX)return PL_INDEX;
   const P=new Map();
-  const get=n=>{if(!P.has(n))P.set(n,{name:n,pos:'',seasons:{},drafts:[],trades:[],tx:[],teams:new Set(),years:new Set(),auction:null,cur26:null,txTeam:{}});return P.get(n)};
+  const fresh=(n,tag)=>({name:n,tag:tag||'',pos:'',seasons:{},drafts:[],trades:[],tx:[],teams:new Set(),years:new Set(),auction:null,cur26:null,txTeam:{}});
+  const plainGet=n=>{if(!P.has(n))P.set(n,fresh(n));return P.get(n)};
+  const getP=(n,ctx)=>{
+    const defs=PL_DISAMBIG[n];ctx=ctx||{};
+    if(!defs)return plainGet(n);
+    const key=i=>n+'\u0001'+i;
+    const cand=i=>{if(!P.has(key(i)))P.set(key(i),fresh(n,defs[i].tag));return P.get(key(i))};
+    for(let i=0;i<defs.length;i++){let ok=false;try{ok=defs[i].test(ctx)}catch(e){}if(ok)return cand(i)}
+    // fallbacks: same-franchise stint in that year or an adjacent one, else a lone stint that year
+    for(const dy of [0,-1,1]){
+      const yr=ctx.yr+dy;if(!yr)continue;
+      const hits=defs.map((d,i)=>{const p=P.get(key(i));return p&&p.seasons[yr]&&p.seasons[yr].some(s=>s.fid===ctx.fid)?i:-1}).filter(i=>i>=0);
+      if(hits.length===1){PL_FALLBACKS.push(n+' fid'+dy);return cand(hits[0])}
+    }
+    if(ctx.yr){
+      const hits=defs.map((d,i)=>{const p=P.get(key(i));return p&&p.seasons[ctx.yr]?i:-1}).filter(i=>i>=0);
+      if(hits.length===1){PL_FALLBACKS.push(n+' yr');return cand(hits[0])}
+    }
+    PL_FALLBACKS.push(n+' DEFAULT0');return cand(0);
+  };
   const NAME_ALIAS={'Son of a Blitz':'Son of a Blitz - not meast'};
   const fidByYearName={};
   DATA.seasons.forEach(s=>{s.standings.forEach(t=>{fidByYearName[s.year+'|'+t.archive_name]=t.franchise_id})});
@@ -100,27 +132,35 @@ function buildPlayers(){
     teams.forEach(tm=>{
       const fid=fidByYearName[yr+'|'+tm[0]]||fidByYearName[yr+'|'+(NAME_ALIAS[tm[0]]||'')];
       tm[2].forEach(pl=>{
-        const p=get(pl[0]);p.pos=pl[1];
+        const p=getP(pl[0],{pos:pl[1],nfl:pl[2],yr:+yr,fid});p.pos=pl[1];
         (p.seasons[yr]=p.seasons[yr]||[]).push({fid:fid||null,team:tm[0],owner:tm[1],pts:pl[3],avg:pl[4],starter:pl[5]===1});
         if(fid)p.teams.add(fid);p.years.add(+yr);
       });
     });
   });
-  AUCTION.picks.forEach(pk=>{const p=get(pk.player);p.auction={bid:pk.bid,fid:pk.franchise_id,team:pk.team};if(!p.pos)p.pos=pk.position;if(pk.franchise_id)p.teams.add(pk.franchise_id);p.years.add(2011)});
-  Object.entries(DRAFTS.drafts).forEach(([yr,picks])=>{picks.forEach(pk=>{const p=get(pk[3]);const fid=DRAFTS.franchises[pk[2]];p.drafts.push({yr:+yr,round:pk[0],pick:pk[1],fid});if(!p.pos)p.pos=pk[4];if(fid)p.teams.add(fid);p.years.add(+yr)})});
+  AUCTION.picks.forEach(pk=>{
+    let p;
+    if(PL_DISAMBIG[pk.player]){
+      // route the auction pick to the identity whose 2011 final roster matches the buying franchise
+      p=getP(pk.player,{yr:2011,fid:pk.franchise_id});
+    } else p=plainGet(pk.player);
+    p.auction={bid:pk.bid,fid:pk.franchise_id,team:pk.team};if(!p.pos)p.pos=pk.position;if(pk.franchise_id)p.teams.add(pk.franchise_id);p.years.add(2011);
+  });
+  Object.entries(DRAFTS.drafts).forEach(([yr,picks])=>{picks.forEach(pk=>{const fid=DRAFTS.franchises[pk[2]];const p=getP(pk[3],{pos:pk[4],nfl:pk[5],yr:+yr,fid});p.drafts.push({yr:+yr,round:pk[0],pick:pk[1],fid});if(!p.pos)p.pos=pk[4];if(fid)p.teams.add(fid);p.years.add(+yr)})});
   TRANS.transactions.forEach(r=>{
-    const p=get(r[3]);const yr=2011+r[0],fid=TRANS.franchises[r[1]];
+    const yr=2011+r[0],fid=TRANS.franchises[r[1]];
+    const p=getP(r[3],{pos:r[4],nfl:r[5],yr,fid});
     p.tx.push({yr,m:r[7],d:r[8],kind:r[2],fid,src:r[6]});p.years.add(yr);
     if(!p.pos)p.pos=r[4];
     if(r[2]===0)p.txTeam[yr]=fid;
   });
   TRANS.trades.forEach(t=>{
-    t.ag.forEach(a=>{if(a[0]==='player'){const p=get(a[1]);p.trades.push({y:t.y,m:t.m,d:t.d,from:t.a,to:t.b});p.teams.add(t.a);p.teams.add(t.b);p.years.add(t.y);if(!p.pos)p.pos=a[2]}});
-    t.bg.forEach(a=>{if(a[0]==='player'){const p=get(a[1]);p.trades.push({y:t.y,m:t.m,d:t.d,from:t.b,to:t.a});p.teams.add(t.a);p.teams.add(t.b);p.years.add(t.y);if(!p.pos)p.pos=a[2]}});
+    t.ag.forEach(a=>{if(a[0]==='player'){const p=getP(a[1],{pos:a[2],yr:t.y,fid:t.a});p.trades.push({y:t.y,m:t.m,d:t.d,from:t.a,to:t.b});p.teams.add(t.a);p.teams.add(t.b);p.years.add(t.y);if(!p.pos)p.pos=a[2]}});
+    t.bg.forEach(a=>{if(a[0]==='player'){const p=getP(a[1],{pos:a[2],yr:t.y,fid:t.b});p.trades.push({y:t.y,m:t.m,d:t.d,from:t.b,to:t.a});p.teams.add(t.a);p.teams.add(t.b);p.years.add(t.y);if(!p.pos)p.pos=a[2]}});
   });
   try{
     const R=tmReplay(2026,999);
-    R.forEach((m,i)=>{const fid=TIMEMACHINE.franchises[i].id;m.forEach((pos,ni)=>{const p=get(TIMEMACHINE.players[ni]);p.cur26=fid;p.teams.add(fid);p.years.add(2026);if(!p.pos)p.pos=pos})});
+    R.forEach((m,i)=>{const fid=TIMEMACHINE.franchises[i].id;m.forEach((posIdx,ni)=>{const nm=TIMEMACHINE.players[ni];const pos=TIMEMACHINE.pos[posIdx];const p=getP(nm,{pos,yr:2026,fid});p.cur26=fid;p.teams.add(fid);p.years.add(2026);if(!p.pos)p.pos=pos})});
   }catch(e){}
   PL_INDEX=P;
   PL_LIST=[...P.values()].map(p=>{
@@ -141,18 +181,19 @@ function renderPlayers(){
   const total=rows.length;rows=rows.slice(0,400);
   plHead.innerHTML=`<b>${fmt(total)}</b> players`;
   plNote.textContent=total>400?`Showing the top 400 — refine the search to narrow it down`:'';
-  plRows.innerHTML=rows.map(x=>{const p=x.p;const teams=[...p.teams].map(plTeamName).filter(Boolean);return `<tr data-name="${encodeURIComponent(p.name)}" style="cursor:pointer"><td data-label="Player"><b>${esc(p.name)}</b></td><td data-label="Pos">${p.pos?posBadge(p.pos):'—'}</td><td data-label="Seasons">${x.nSeasons}</td><td data-label="Fantasy teams">${esc(teams.slice(0,3).join(', '))}${teams.length>3?` +${teams.length-3} more`:''}</td><td data-label="Career pts">${x.nScored?fmt(Math.round(x.total)):'—'}</td><td data-label="Best season">${x.best?`${fmt(x.best.pts)} · ${x.best.yr}`:'—'}</td></tr>`}).join('')||`<tr><td colspan="6"><div class="empty">No players match these filters.</div></td></tr>`;
+  plRows.innerHTML=rows.map(x=>{const p=x.p;const teams=[...p.teams].map(plTeamName).filter(Boolean);return `<tr data-name="${encodeURIComponent(p.name+(p.tag?'\u0001'+p.tag:''))}" style="cursor:pointer"><td data-label="Player"><b>${esc(p.name)}</b>${p.tag?` <span style="opacity:.6;font-size:.85em">${esc(p.tag)}</span>`:''}</td><td data-label="Pos">${p.pos?posBadge(p.pos):'—'}</td><td data-label="Seasons">${x.nSeasons}</td><td data-label="Fantasy teams">${esc(teams.slice(0,3).join(', '))}${teams.length>3?` +${teams.length-3} more`:''}</td><td data-label="Career pts">${x.nScored?fmt(Math.round(x.total)):'—'}</td><td data-label="Best season">${x.best?`${fmt(x.best.pts)} · ${x.best.yr}`:'—'}</td></tr>`}).join('')||`<tr><td colspan="6"><div class="empty">No players match these filters.</div></td></tr>`;
 }
-function openPlayer(name){
+function openPlayer(key){
   buildPlayers();
-  const x=PL_LIST.find(v=>v.p.name===name);if(!x)return;const p=x.p;
+  const [name,tag]=key.split('\u0001');
+  const x=PL_LIST.find(v=>v.p.name===name&&v.p.tag===(tag||''));if(!x)return;const p=x.p;
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active',v.id==='player'));
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.view==='players'));
   scrollTo({top:0,behavior:'smooth'});
   pdName.textContent=p.name;
   const teams=[...p.teams].map(plTeamName).filter(Boolean);
-  pdEyebrow.textContent=`Player history · ${p.pos||'—'}`;
-  pdSummary.textContent=`${p.years.size} season${p.years.size===1?'':'s'} in the league · ${teams.length} fantasy team${teams.length===1?'':'s'}: ${teams.join(', ')}.`;
+  pdEyebrow.textContent=`Player history · ${p.pos||'—'}${p.tag?' · '+p.tag:''}`;
+  pdSummary.textContent=`${p.years.size} season${p.years.size===1?'':'s'} in the league · ${teams.length} fantasy team${teams.length===1?'':'s'}: ${teams.join(', ')}.${p.tag?' (One of the archive players who share this name — identity verified by position, NFL team and birth year.)':''}`;
   pdKpis.innerHTML=`<div><b>${x.nScored?fmt(Math.round(x.total)):'—'}</b><span>career fantasy points</span></div><div><b>${x.best?fmt(x.best.pts):'—'}</b><span>best season${x.best?' · '+x.best.yr:''}</span></div><div><b>${p.trades.length}</b><span>times traded</span></div><div><b>${p.tx.length}</b><span>add / drop moves</span></div>`;
   const draftByYr={};p.drafts.forEach(d=>{draftByYr[d.yr]=d});
   const years=[...p.years].sort((a,b)=>b-a);
